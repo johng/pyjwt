@@ -1,16 +1,10 @@
 import base64
 import binascii
 import re
-from typing import Optional, Union
+from typing import TYPE_CHECKING, Optional, Union
 
-try:
+if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurve
-    from cryptography.hazmat.primitives.asymmetric.utils import (
-        decode_dss_signature,
-        encode_dss_signature,
-    )
-except ModuleNotFoundError:
-    pass
 
 
 def force_bytes(value: Union[bytes, str]) -> bytes:
@@ -72,6 +66,8 @@ def bytes_from_int(val: int, *, bit_length: Optional[int] = None) -> bytes:
 
 
 def der_to_raw_signature(der_sig: bytes, curve: "EllipticCurve") -> bytes:
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
     num_bits = curve.key_size
     num_bytes = (num_bits + 7) // 8
 
@@ -81,6 +77,8 @@ def der_to_raw_signature(der_sig: bytes, curve: "EllipticCurve") -> bytes:
 
 
 def raw_to_der_signature(raw_sig: bytes, curve: "EllipticCurve") -> bytes:
+    from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
     num_bits = curve.key_size
     num_bytes = (num_bits + 7) // 8
 
