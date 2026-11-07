@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 import sys
@@ -9,9 +10,12 @@ from abc import ABC, abstractmethod
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     ClassVar,
+    Generic,
     Literal,
     NoReturn,
+    TypeVar,
     Union,
     cast,
     get_args,
@@ -32,7 +36,28 @@ from .utils import (
     to_base64url_uint,
 )
 
-try:
+# PEP 810 (Python 3.15+): the imports from these modules are lazy, so
+# cryptography is only imported when one of the names is first used, rather
+# than on ``import jwt``. Earlier versions ignore __lazy_modules__.
+__lazy_modules__ = [
+    "cryptography",
+    "cryptography.exceptions",
+    "cryptography.hazmat.backends",
+    "cryptography.hazmat.primitives",
+    "cryptography.hazmat.primitives.asymmetric",
+    "cryptography.hazmat.primitives.asymmetric.ec",
+    "cryptography.hazmat.primitives.asymmetric.ed448",
+    "cryptography.hazmat.primitives.asymmetric.ed25519",
+    "cryptography.hazmat.primitives.asymmetric.rsa",
+    "cryptography.hazmat.primitives.serialization",
+    "jwt._key_types",
+]
+
+# A lazy import cannot tell whether cryptography is installed (and imports in
+# a try block are never lazy), so check for it without importing it.
+has_crypto = importlib.util.find_spec("cryptography") is not None
+
+if has_crypto:
     from cryptography import x509
     from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
     from cryptography.hazmat.backends import default_backend
@@ -79,36 +104,21 @@ try:
         load_ssh_public_key,
     )
 
-    if sys.version_info >= (3, 10):
-        from typing import TypeAlias
-    else:
-        # Python 3.9 and lower
-        from typing_extensions import TypeAlias
-
-    # Type aliases for convenience in algorithms method signatures
-    AllowedRSAKeys: TypeAlias = Union[RSAPrivateKey, RSAPublicKey]
-    AllowedECKeys: TypeAlias = Union[EllipticCurvePrivateKey, EllipticCurvePublicKey]
-    AllowedOKPKeys: TypeAlias = Union[
-        Ed25519PrivateKey, Ed25519PublicKey, Ed448PrivateKey, Ed448PublicKey
-    ]
-    AllowedKeys: TypeAlias = Union[AllowedRSAKeys, AllowedECKeys, AllowedOKPKeys]
-    #: Type alias for allowed ``cryptography`` private keys (requires ``cryptography`` to be installed)
-    AllowedPrivateKeys: TypeAlias = Union[
-        RSAPrivateKey, EllipticCurvePrivateKey, Ed25519PrivateKey, Ed448PrivateKey
-    ]
-    #: Type alias for allowed ``cryptography`` public keys (requires ``cryptography`` to be installed)
-    AllowedPublicKeys: TypeAlias = Union[
-        RSAPublicKey, EllipticCurvePublicKey, Ed25519PublicKey, Ed448PublicKey
-    ]
+    from ._key_types import (
+        AllowedECKeys as AllowedECKeys,
+        AllowedKeys as AllowedKeys,
+        AllowedOKPKeys as AllowedOKPKeys,
+        AllowedPrivateKeys as AllowedPrivateKeys,
+        AllowedPublicKeys as AllowedPublicKeys,
+        AllowedRSAKeys as AllowedRSAKeys,
+    )
 
     if TYPE_CHECKING or bool(os.getenv("SPHINX_BUILD", "")):
         from cryptography.hazmat.primitives.asymmetric.types import (
             PrivateKeyTypes,
             PublicKeyTypes,
         )
-
-    has_crypto = True
-except ModuleNotFoundError:
+else:
     if sys.version_info >= (3, 11):
         from typing import Never
     else:
@@ -120,7 +130,14 @@ except ModuleNotFoundError:
     AllowedKeys = Never  # type: ignore[misc]
     AllowedPrivateKeys = Never  # type: ignore[misc]
     AllowedPublicKeys = Never  # type: ignore[misc]
-    has_crypto = False
+
+if has_crypto and not TYPE_CHECKING and os.getenv("SPHINX_BUILD"):
+    # Sphinx only documents names that are assigned in this module.
+
+    #: Type alias for allowed ``cryptography`` private keys (requires ``cryptography`` to be installed)
+    AllowedPrivateKeys = AllowedPrivateKeys
+    #: Type alias for allowed ``cryptography`` public keys (requires ``cryptography`` to be installed)
+    AllowedPublicKeys = AllowedPublicKeys
 
 
 requires_cryptography = {
@@ -139,16 +156,20 @@ requires_cryptography = {
 }
 
 
-def get_default_algorithms() -> dict[str, Algorithm]:
-    """
-    Returns the algorithms that are implemented by the library.
-    """
-    default_algorithms: dict[str, Algorithm] = {
+def _get_non_crypto_algorithms() -> dict[str, Algorithm]:
+    return {
         "none": NoneAlgorithm(),
         "HS256": HMACAlgorithm(HMACAlgorithm.SHA256),
         "HS384": HMACAlgorithm(HMACAlgorithm.SHA384),
         "HS512": HMACAlgorithm(HMACAlgorithm.SHA512),
     }
+
+
+def get_default_algorithms() -> dict[str, Algorithm]:
+    """
+    Returns the algorithms that are implemented by the library.
+    """
+    default_algorithms = _get_non_crypto_algorithms()
 
     if has_crypto:
         default_algorithms.update(
@@ -171,6 +192,18 @@ def get_default_algorithms() -> dict[str, Algorithm]:
         )
 
     return default_algorithms
+
+
+def _get_default_algorithm(alg_name: str) -> Algorithm:
+    """
+    Returns a new instance of the default algorithm ``alg_name``, using
+    ``cryptography`` only if that algorithm needs it.
+
+    :raises KeyError: if there is no such algorithm.
+    """
+    if alg_name in requires_cryptography:
+        return get_default_algorithms()[alg_name]
+    return _get_non_crypto_algorithms()[alg_name]
 
 
 class Algorithm(ABC):
@@ -326,7 +359,11 @@ class HMACAlgorithm(Algorithm):
 
     @staticmethod
     def _is_der_key(key_bytes: bytes) -> bool:
-        if not has_crypto:
+        # DER public keys (SubjectPublicKeyInfo or PKCS#1) and X.509
+        # certificates are all ASN.1 SEQUENCEs, so their first byte is always
+        # the identifier octet 0x30 (X.690, 8.1.2). Checking it first means
+        # most HMAC secrets never need cryptography to be imported.
+        if not has_crypto or not key_bytes.startswith(b"\x30"):
             return False
 
         try:
@@ -497,6 +534,30 @@ class HMACAlgorithm(Algorithm):
         return hmac.compare_digest(sig, self.sign(msg, key))
 
 
+_T = TypeVar("_T")
+
+
+class _LazyClassAttribute(Generic[_T]):
+    """
+    A class attribute that is computed on first access, then stored on the
+    class. The cryptography-backed algorithms use it for class attributes
+    whose values come from cryptography, so that defining those classes does
+    not resolve the lazy cryptography imports above.
+    """
+
+    def __init__(self, compute: Callable[[], _T]) -> None:
+        self._compute = compute
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._owner = owner
+        self._name = name
+
+    def __get__(self, instance: object, owner: type | None = None) -> _T:
+        value = self._compute()
+        setattr(self._owner, self._name, value)
+        return value
+
+
 if has_crypto:
 
     class RSAAlgorithm(Algorithm):
@@ -505,13 +566,21 @@ if has_crypto:
         RSASSA-PKCS-v1_5 and the specified hash function.
         """
 
-        SHA256: ClassVar[type[hashes.HashAlgorithm]] = hashes.SHA256
-        SHA384: ClassVar[type[hashes.HashAlgorithm]] = hashes.SHA384
-        SHA512: ClassVar[type[hashes.HashAlgorithm]] = hashes.SHA512
+        SHA256: _LazyClassAttribute[type[hashes.HashAlgorithm]] = _LazyClassAttribute(
+            lambda: hashes.SHA256
+        )
+        SHA384: _LazyClassAttribute[type[hashes.HashAlgorithm]] = _LazyClassAttribute(
+            lambda: hashes.SHA384
+        )
+        SHA512: _LazyClassAttribute[type[hashes.HashAlgorithm]] = _LazyClassAttribute(
+            lambda: hashes.SHA512
+        )
 
-        _crypto_key_types = cast(
-            tuple[type[AllowedKeys], ...],
-            get_args(Union[RSAPrivateKey, RSAPublicKey]),
+        _crypto_key_types = _LazyClassAttribute(
+            lambda: cast(
+                tuple[type[AllowedKeys], ...],
+                get_args(Union[RSAPrivateKey, RSAPublicKey]),
+            )
         )
         _MIN_KEY_SIZE: ClassVar[int] = 2048
 
@@ -696,13 +765,21 @@ if has_crypto:
         ECDSA and the specified hash function
         """
 
-        SHA256: ClassVar[type[hashes.HashAlgorithm]] = hashes.SHA256
-        SHA384: ClassVar[type[hashes.HashAlgorithm]] = hashes.SHA384
-        SHA512: ClassVar[type[hashes.HashAlgorithm]] = hashes.SHA512
+        SHA256: _LazyClassAttribute[type[hashes.HashAlgorithm]] = _LazyClassAttribute(
+            lambda: hashes.SHA256
+        )
+        SHA384: _LazyClassAttribute[type[hashes.HashAlgorithm]] = _LazyClassAttribute(
+            lambda: hashes.SHA384
+        )
+        SHA512: _LazyClassAttribute[type[hashes.HashAlgorithm]] = _LazyClassAttribute(
+            lambda: hashes.SHA512
+        )
 
-        _crypto_key_types = cast(
-            tuple[type[AllowedKeys], ...],
-            get_args(Union[EllipticCurvePrivateKey, EllipticCurvePublicKey]),
+        _crypto_key_types = _LazyClassAttribute(
+            lambda: cast(
+                tuple[type[AllowedKeys], ...],
+                get_args(Union[EllipticCurvePrivateKey, EllipticCurvePublicKey]),
+            )
         )
 
         def __init__(
@@ -943,16 +1020,18 @@ if has_crypto:
         This class requires ``cryptography>=2.6`` to be installed.
         """
 
-        _crypto_key_types = cast(
-            tuple[type[AllowedKeys], ...],
-            get_args(
-                Union[
-                    Ed25519PrivateKey,
-                    Ed25519PublicKey,
-                    Ed448PrivateKey,
-                    Ed448PublicKey,
-                ]
-            ),
+        _crypto_key_types = _LazyClassAttribute(
+            lambda: cast(
+                tuple[type[AllowedKeys], ...],
+                get_args(
+                    Union[
+                        Ed25519PrivateKey,
+                        Ed25519PublicKey,
+                        Ed448PrivateKey,
+                        Ed448PublicKey,
+                    ]
+                ),
+            )
         )
 
         def __init__(self, **kwargs: Any) -> None:

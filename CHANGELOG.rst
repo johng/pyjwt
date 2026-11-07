@@ -10,6 +10,12 @@ This project adheres to `Semantic Versioning <https://semver.org/>`__.
 Changed
 ~~~~~~~
 
+- On Python 3.15+, import ``cryptography`` lazily (PEP 810), when an
+  algorithm that needs it is first used rather than on ``import jwt``.
+  Applications that only use HMAC no longer load it, which roughly halves
+  the import time of ``jwt`` and saves about 7 MB of memory when
+  ``cryptography`` is installed
+  (`#1250 <https://github.com/jpadilla/pyjwt/issues/1250>`__).
 - Add public ``jwt.decode`` regression coverage for AWS ALB-style padded
   ES256 tokens, including rejection of tampered payloads and signatures,
   in `#1211 <https://github.com/jpadilla/pyjwt/pull/1211>`__.

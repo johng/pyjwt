@@ -1,16 +1,21 @@
 import base64
 import binascii
+import importlib.util
 import re
 from typing import Optional, Union
 
-try:
+# PEP 810 lazy imports on Python 3.15+; see jwt.algorithms.
+__lazy_modules__ = [
+    "cryptography.hazmat.primitives.asymmetric.ec",
+    "cryptography.hazmat.primitives.asymmetric.utils",
+]
+
+if importlib.util.find_spec("cryptography") is not None:
     from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurve
     from cryptography.hazmat.primitives.asymmetric.utils import (
         decode_dss_signature,
         encode_dss_signature,
     )
-except ModuleNotFoundError:
-    pass
 
 
 def force_bytes(value: Union[bytes, str]) -> bytes:
