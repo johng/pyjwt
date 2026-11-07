@@ -5,7 +5,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from .algorithms import get_default_algorithms, has_crypto, requires_cryptography
+from .algorithms import _get_default_algorithm, has_crypto, requires_cryptography
 from .exceptions import (
     InvalidKeyError,
     MissingCryptographyError,
@@ -73,7 +73,7 @@ class PyJWK:
         self.algorithm_name = algorithm
 
         try:
-            self.Algorithm = get_default_algorithms()[algorithm]
+            self.Algorithm = _get_default_algorithm(algorithm)
         except KeyError:
             raise PyJWKError(
                 f"Unable to find an algorithm for key: {self._jwk_data}",

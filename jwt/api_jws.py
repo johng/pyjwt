@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from .algorithms import (
     Algorithm,
+    _get_non_crypto_algorithms,
     get_default_algorithms,
     has_crypto,
     requires_cryptography,
@@ -41,7 +42,13 @@ class PyJWS:
         algorithms: Sequence[str] | None = None,
         options: SigOptions | None = None,
     ) -> None:
-        self._algorithms = get_default_algorithms()
+        # Algorithms that need cryptography start out as None and are created
+        # on first use (see get_algorithm_by_name), so that creating a PyJWS,
+        # and so importing jwt, does not import cryptography.
+        self._algorithms: dict[str, Algorithm | None] = {**_get_non_crypto_algorithms()}
+        if has_crypto:
+            self._algorithms.update(dict.fromkeys(sorted(requires_cryptography)))
+
         self._valid_algs = (
             set(algorithms) if algorithms is not None else set(self._algorithms)
         )
@@ -112,7 +119,12 @@ class PyJWS:
         :rtype: Algorithm
         """
         try:
-            return self._algorithms[alg_name]
+            alg_obj = self._algorithms[alg_name]
+            if alg_obj is None:
+                alg_obj = self._algorithms[alg_name] = get_default_algorithms()[
+                    alg_name
+                ]
+            return alg_obj
         except KeyError as e:
             if not has_crypto and alg_name in requires_cryptography:
                 raise NotImplementedError(
